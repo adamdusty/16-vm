@@ -47,6 +47,17 @@ enum
     FL_NEG = 1 << 2, // N 100
 };
 
+// Trap codes
+enum
+{
+    TRAP_GETC = 0x20,  // Get char from keyboard. Not echoed onto term
+    TRAP_OUT = 0x21,   // Output a char
+    TRAP_PUTS = 0x22,  // Output a word string
+    TRAP_IN = 0x23,    // Get char from keyboard, echo onto term
+    TRAP_PUTSP = 0x24, // Output a byte string
+    TRAP_HALT = 0x25,  // Halt program
+};
+
 uint16_t memory[UINT16_MAX];
 uint16_t registers[R_COUNT];
 
@@ -79,6 +90,50 @@ void update_condition(uint16_t r)
         registers[R_COND] = FL_NEG;
     else
         registers[R_COND] = FL_POS;
+}
+
+uint16_t swap16(uint16_t x)
+{
+    return (x << 8) | (x >> 8);
+}
+
+void read_image_file(FILE *file)
+{
+
+    // Memory origin where image should be placed
+    uint16_t origin;
+
+    // Read 16 bits into 'origin' from 'file'
+    fread(&origin, sizeof(origin), 1, file);
+
+    // Swap endianness
+    origin = swap16(origin);
+
+    // Max memory to read
+    uint16_t max_read = UINT16_MAX - origin;
+
+    // Point to origin
+    uint16_t *p = memory + origin;
+
+    // Set stream file into *p
+    size_t read = fread(p, sizeof(uint16_t), max_read, file);
+
+    while (read-- > 0)
+    {
+        *p = swap16(*p);
+        ++p;
+    }
+}
+
+void read_image(const char *image_path)
+{
+    FILE *file = fopen(image_path, "rb");
+    if (!file)
+        return 0;
+
+    read_image_file(file);
+    fclose(file);
+    return 1;
 }
 
 int main(int argc, const char *argv[])
@@ -223,7 +278,7 @@ int main(int argc, const char *argv[])
             if (b11)
             {
                 // Set PC to PC (saved in r7) + sign extension of the last 11 bits
-                registers[R_PC] = registers[R_R7] + sign_extend(instruction & 0xB, 11);
+                registers[R_PC] += sign_extend(instruction & 0x7FF, 11);
             }
             else
             {
@@ -275,7 +330,7 @@ int main(int argc, const char *argv[])
             uint16_t br = (instruction >> 6) & 0x7;
 
             // Sign extend right most 6 bits for offset
-            uint16_t offset = sign_extend(instruction & 0x2F, 6);
+            uint16_t offset = sign_extend(instruction & 0x3F, 6);
 
             // Populate DR with value in base register br + offset
             registers[r0] = mem_read(registers[br] + offset);
@@ -341,6 +396,68 @@ int main(int argc, const char *argv[])
         break;
         case OP_TRAP:
         {
+            switch (instruction & 0xFF)
+            {
+            case TRAP_GETC:
+            {
+                // Store ascii char in register 0
+                registers[R_R0] = (uint16_t)getchar();
+            }
+            break;
+            case TRAP_OUT:
+            {
+                putc((char)registers[R_R0], stdout);
+                fflush(stdout);
+            }
+            break;
+            case TRAP_PUTS:
+            {
+                // Get memory
+                uint16_t *c = memory + registers[R_R0];
+                while (*c)
+                {
+                    putc((char)*c, stdout);
+                    ++c;
+                }
+
+                fflush(stdout);
+            }
+            break;
+            case TRAP_IN:
+            {
+                printf("Enter a character: ");
+                char c = getchar();
+                putc(c, stdout);
+                registers[R_R0] = (uint16_t)c;
+            }
+            break;
+            case TRAP_PUTSP:
+            {
+                uint16_t *c = memory + registers[R_R0];
+                while (*c)
+                {
+                    // First 8 bits
+                    char c1 = (*c) & 0xFF;
+                    putc(c1, stdout);
+
+                    // Next 8 bits
+                    char c2 = (*c) >> 8;
+                    if (c2)
+                        putc(c2, stdout);
+
+                    ++c;
+                }
+                fflush(stdout);
+            }
+            break;
+            case TRAP_HALT:
+            {
+                puts("HALT");
+                fflush(stdout);
+                running = 0;
+            }
+            break;
+            }
         }
         break;
         case OP_RES:
